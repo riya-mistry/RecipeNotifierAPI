@@ -1,0 +1,795 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Resources:
+  VegNotificationTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      TopicName: "vegEmailNotification"
+      Subscription:
+        - Protocol: "email"
+          Endpoint: "ry951622@dal.ca"
+
+  NonVegNotificationTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      TopicName: "nonvegEmailNotification"
+      Subscription:
+        - Protocol: "email"
+          Endpoint: "ry951622@dal.ca"
+
+  vegRecipeAlertQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: vegRecipeAlert
+  nonvegRecipeAlertQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: nonvegRecipeAlert
+  
+  vegRecipeTriggerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: vegRecipeTrigger
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::837060085355:role/LabRole
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+
+          sqs = boto3.client('sqs')
+          sns = boto3.client('sns')
+
+          queue_url = sqs.get_queue_url(QueueName= "vegRecipeAlert")['QueueUrl']
+          topic_arn = os.environ['VEG_SNS_ARN']
+
+          def lambda_handler(event, context):
+            for message in event['Records']:
+              try:
+                # Get the body of the message
+                message_body = json.loads(message['body'])
+                # Get the message content and publish it to SNS
+            
+                sns.publish(TopicArn=os.environ['VEG_SNS_ARN'], Message=message_body)
+                # Delete the message from the SQS queue
+                sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=message['receiptHandle'])
+                print('Successfully processed message: ', message_content)
+              except Exception as e:
+                print('Error processing message: ', e)
+      Runtime: python3.9
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          VEG_SNS_ARN: !Ref VegNotificationTopic
+  LambdaEventSourceMapping:
+    Type: "AWS::Lambda::EventSourceMapping"
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt vegRecipeAlertQueue.Arn
+      FunctionName: !GetAtt vegRecipeTriggerLambdaFunction.Arn
+  
+  nonvegRecipeTriggerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: nonvegRecipeTrigger
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::837060085355:role/LabRole
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          sqs = boto3.client('sqs')
+          sns = boto3.client('sns')
+
+          queue_url = sqs.get_queue_url(QueueName= "nonvegRecipeAlert")['QueueUrl']
+          topic_arn = os.environ['NONVEG_SNS_ARN']
+
+          def lambda_handler(event, context):
+            for message in event['Records']:
+              try:
+                # Get the body of the message
+                message_body = json.loads(message['body'])
+                # Get the message content and publish it to SNS
+            
+                sns.publish(TopicArn=os.environ['NONVEG_SNS_ARN'], Message=message_body)
+                # Delete the message from the SQS queue
+                sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=message['receiptHandle'])
+                print('Successfully processed message: ', message_content)
+              except Exception as e:
+                print('Error processing message: ', e)
+      Runtime: python3.9
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          NONVEG_SNS_ARN: !Ref NonVegNotificationTopic
+
+  LambdaEventSourceMapping2:
+    Type: "AWS::Lambda::EventSourceMapping"
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt nonvegRecipeAlertQueue.Arn
+      FunctionName: !GetAtt nonvegRecipeTriggerLambdaFunction.Arn
+  
+  vegRecipeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: VEGRECIPE
+      AttributeDefinitions:
+        - AttributeName: RecipeID
+          AttributeType: S
+        - AttributeName: TimetoCook
+          AttributeType: N
+        
+      KeySchema:
+        - AttributeName: RecipeID
+          KeyType: HASH
+        - AttributeName: TimetoCook
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  nonvegRecipeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: NONVEGRECIPE
+      AttributeDefinitions:
+        - AttributeName: RecipeID
+          AttributeType: S
+        - AttributeName: TimetoCook
+          AttributeType: N
+      KeySchema:
+        - AttributeName: RecipeID
+          KeyType: HASH
+        - AttributeName: TimetoCook
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  vegEmailsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: vegEmails
+      AttributeDefinitions:
+        - AttributeName: emailID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: emailID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  nonvegEmailsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: nonvegEmails
+      AttributeDefinitions:
+        - AttributeName: emailID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: emailID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  vegRecipeAdditionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: vegRecipeAddition
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::837060085355:role/LabRole
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import uuid
+          # Initialize the DynamoDB client
+          dynamodb = boto3.resource('dynamodb')
+
+          # Initialize the sqs client
+          sqs = boto3.client('sqs')
+          def lambda_handler(event, context):
+          
+            queue_url = sqs.get_queue_url(QueueName="vegRecipeAlert")['QueueUrl']
+            # Extract recipe details and table name from the input event
+            recipe_details = json.loads(json.dumps(event))
+            table_name = "VEGRECIPE"
+            recipe_id = str(uuid.uuid1()) # Generate a unique recipe ID using the current timestamp
+    
+            print(json.dumps(event))
+    
+            # Extract the recipe name, ingredients array, time to cook, and description from the recipe details
+            recipe_name = recipe_details['name']
+            ingredients = recipe_details['ingredients']
+            time_to_cook = int(recipe_details['time_to_cook'])
+            description = recipe_details['description']
+            # Create a new item in the DynamoDB table with the extracted details
+            table = dynamodb.Table(table_name)
+            Item={
+              'RecipeID': recipe_id,
+              'recipe_name': recipe_name,
+              'ingredients': ingredients,
+              'TimetoCook': time_to_cook,
+              'description': description
+            }
+            table.put_item(Item=Item)
+            ingredients = ", ".join(ingredients)
+            # Format the message to be sent to SNS
+            message_text = f"New recipe: {recipe_name}. Ingredients: {ingredients}. Time to cook: {time_to_cook} with the procedure: {description}."
+            response = sqs.send_message(QueueUrl=queue_url,MessageBody=json.dumps(message_text))
+
+            # Return a success message
+            return {
+              'statusCode': 200,
+              'headers':{
+                "Content-Type":"application/json"
+              },
+              "body": "Data stored Successfully"
+            }
+
+  nonvegRecipeAdditionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: nonvegRecipeAddition
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::837060085355:role/LabRole
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import uuid
+          # Initialize the DynamoDB client
+          dynamodb = boto3.resource('dynamodb')
+
+          # Initialize the sqs client
+          sqs = boto3.client('sqs')
+          def lambda_handler(event, context):
+          
+            queue_url = sqs.get_queue_url(QueueName="nonvegRecipeAlert")['QueueUrl']
+            # Extract recipe details and table name from the input event
+            recipe_details = json.loads(json.dumps(event))
+            table_name = "NONVEGRECIPE"
+            recipe_id = str(uuid.uuid1()) # Generate a unique recipe ID using the current timestamp
+    
+            print(json.dumps(event))
+    
+            # Extract the recipe name, ingredients array, time to cook, and description from the recipe details
+            recipe_name = recipe_details['name']
+            ingredients = recipe_details['ingredients']
+            time_to_cook = int(recipe_details['time_to_cook'])
+            description = recipe_details['description']
+            # Create a new item in the DynamoDB table with the extracted details
+            table = dynamodb.Table(table_name)
+            Item={
+              'RecipeID': recipe_id,
+              'recipe_name': recipe_name,
+              'ingredients': ingredients,
+              'TimetoCook': time_to_cook,
+              'description': description
+            }
+            table.put_item(Item=Item)
+            ingredients = ", ".join(ingredients)
+            # Format the message to be sent to SNS
+            message_text = f"New recipe: {recipe_name}. Ingredients: {ingredients}. Time to cook: {time_to_cook} with the procedure: {description}."
+            response = sqs.send_message(QueueUrl=queue_url,MessageBody=json.dumps(message_text))
+
+            # Return a success message
+            return {
+              'statusCode': 200,
+              'headers':{
+                "Content-Type":"application/json"
+              },
+              "body": "Data stored Successfully"
+            }
+  fetchAllRecipes:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: fetch_All_Recipes
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::837060085355:role/LabRole
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          dynamodb = boto3.resource('dynamodb')
+          table_name = ''
+
+          def lambda_handler(event, context):
+            event = json.loads(json.dumps(event))
+            type = event['type']
+            if type == "veg":
+              table = dynamodb.Table("VEGRECIPE")
+            else:
+              table = dynamodb.Table("NONVEGRECIPE")
+    
+            try:
+              response = table.scan()
+              items = response['Items']
+              while 'LastEvaluatedKey' in response:
+                response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+                items.extend(response['Items'])
+            except Exception as e:
+              print(e)
+              return {
+                'statusCode': 500,
+                'body': json.dumps('Error occurred while scanning DynamoDB table.')
+              }
+    
+            return {
+              'statusCode': 200,
+              'headers':{
+              "Content-Type":"application/json"
+              },
+              'body': items
+            }
+
+
+  storeSubscribers:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: storeSubscribers
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::837060085355:role/LabRole
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          def lambda_handler(event, context):
+            # Initialize DynamoDB client
+            dynamodb = boto3.resource('dynamodb')
+
+            # Create an SNS client
+            sns_client = boto3.client('sns')
+    
+            veg_sns_arn = os.environ['VEG_SNS_ARN']
+            nonveg_sns_arn = os.environ['NONVEG_SNS_ARN']
+
+            event = json.loads(json.dumps(event))
+            # Get the email ID from the event
+            email_id = event['email_id']
+            type = event['type']
+            table_name = ""
+            if type == 'veg':
+              table_name = "vegEmails"
+              topic_arn = veg_sns_arn
+            else:
+              table_name = "nonvegEmails"
+              topic_arn = nonveg_sns_arn  
+            # Get the DynamoDB table
+            table = dynamodb.Table(table_name)
+      
+
+            # Add the email ID to the table
+            table.put_item(Item={'emailID': email_id})
+            # Create a subscription request for the email address
+            subscription = sns_client.subscribe(
+              TopicArn=topic_arn,
+              Protocol='email',
+              Endpoint=email_id
+            )
+    
+    
+            print(subscription['SubscriptionArn'])
+            return {
+              'statusCode': 200,
+              'body': json.dumps('subscriber stored successfully'),
+              "subscription":json.dumps(subscription['SubscriptionArn'])
+            }
+      MemorySize: 128
+      Environment:
+        Variables:
+          VEG_SNS_ARN: !Ref VegNotificationTopic
+          NONVEG_SNS_ARN: !Ref NonVegNotificationTopic
+
+  RecipeStateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      DefinitionString:
+        !Sub
+          - |-
+            {
+              "Comment": "State machine to process veg and non-veg recipes",
+              "StartAt": "Choice",
+              "States": {
+                "Choice": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.input.type",
+                      "StringEquals": "veg",
+                      "Next": "StoreVegRecipe"
+                    },
+                    {
+                      "Variable": "$.input.type",
+                      "StringEquals": "nonveg",
+                      "Next": "StoreNonVegRecipe"
+                    }
+                  ]
+                },
+                "StoreVegRecipe": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "Payload.$": "$.input",
+                    "FunctionName": "${vegLambda}"
+                  },
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.AWSLambdaException",
+                        "Lambda.SdkClientException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 6,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "End": true,
+                  "OutputPath": "$.Payload"
+                },
+                "StoreNonVegRecipe": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "OutputPath": "$.Payload",
+                  "Parameters": {
+                    "Payload.$": "$.input",
+                    "FunctionName": "${nonvegLambda}"
+                  },
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.AWSLambdaException",
+                        "Lambda.SdkClientException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 6,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "End": true
+                }
+              }
+            }
+          - vegLambda: !GetAtt [vegRecipeAdditionFunction, Arn]
+            nonvegLambda: !GetAtt [nonvegRecipeAdditionFunction, Arn]
+      RoleArn: arn:aws:iam::837060085355:role/LabRole
+
+  RestApi:
+        Type: AWS::ApiGateway::RestApi
+        Properties:
+            Name: recipeproj
+            EndpointConfiguration:
+              Types:
+                - REGIONAL
+
+  AddSubscribersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt [RestApi, RootResourceId]
+      PathPart: "add-subscribers"
+      RestApiId: !Ref RestApi
+
+  AddSubscribersMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref AddSubscribersResource
+      RestApiId: !Ref RestApi
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${storeSubscribers.Arn}/invocations"
+        Credentials: "arn:aws:iam::837060085355:role/LabRole"
+        PassthroughBehavior: WHEN_NO_MATCH
+        IntegrationResponses:
+            - StatusCode: 200
+              ResponseParameters:
+                method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                method.response.header.Access-Control-Allow-Methods: "'OPTIONS, POST'"
+                method.response.header.Access-Control-Allow-Origin: "'*'"
+                method.response.header.Access-Control-Allow-Credentials: "'true'"
+              ResponseTemplates:
+                application/json: ""
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Credentials: true
+
+  storeSubscriberPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+          Action: lambda:InvokeFunction
+          FunctionName: !Ref storeSubscribers
+          Principal: apigateway.amazonaws.com
+          SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/POST/add-subscribers"
+
+  OptionsSubscribersMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RestApi
+      ResourceId:
+        Ref: AddSubscribersResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS, POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Credentials: "'true'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+            method.response.header.Access-Control-Allow-Credentials: false
+          ResponseModels:
+            application/json: Empty
+
+
+  FetchAllRecipesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt [RestApi, RootResourceId]
+      PathPart: "fetch_all_recipes"
+      RestApiId: !Ref RestApi
+
+  FetchAllRecipesMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref FetchAllRecipesResource
+      RestApiId: !Ref RestApi
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${fetchAllRecipes.Arn}/invocations"
+        Credentials: "arn:aws:iam::837060085355:role/LabRole"
+        PassthroughBehavior: WHEN_NO_MATCH
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS, POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Credentials: "'true'"
+            ResponseTemplates:
+              application/json: ""
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Credentials: true
+
+  FetchAllOptionRecipesMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RestApi
+      ResourceId:
+        Ref: FetchAllRecipesResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS, POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Credentials: "'true'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+            method.response.header.Access-Control-Allow-Credentials: false
+          ResponseModels:
+            application/json: Empty  
+
+  fetchAllRecipesPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName: !Ref fetchAllRecipes
+        Principal: apigateway.amazonaws.com
+        SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/POST/fetch_all_recipes"
+  
+  AddRecipeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt [RestApi, RootResourceId]
+      PathPart: "add_recipe"
+      RestApiId: !Ref RestApi
+
+  AddRecipeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RestApi
+      ResourceId:
+        Ref: AddRecipeResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
+        Credentials: "arn:aws:iam::837060085355:role/LabRole"
+        RequestParameters:
+          integration.request.header.Content-Type: "'application/x-amz-json-1.1'"
+        RequestTemplates:
+          application/json: !Sub |
+            {
+              "input": "$util.escapeJavaScript($input.json('$'))",
+              "stateMachineArn": "${RecipeStateMachine}"
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS, POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Credentials: "'true'"
+            ResponseTemplates:
+              application/json: |
+                #set($stepFunctionOutput = $input.path('$'))
+                #set($parsedOutput = $util.parseJson($stepFunctionOutput))
+                {
+                    "statusCode": 200,
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                  "body": "Recipe Added Successfully"
+                  }
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Credentials: true
+  OptionsRecipeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId:
+        Ref: RestApi
+      ResourceId:
+        Ref: AddRecipeResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS, POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Credentials: "'true'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+            method.response.header.Access-Control-Allow-Credentials: false
+          ResponseModels:
+            application/json: Empty
+
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - AddSubscribersMethod
+    - FetchAllRecipesMethod
+    - AddRecipeMethod
+    Properties:
+      RestApiId: !Ref RestApi
+      StageName: recipestage
+
+  modifyHTMLContentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: modifyHTMLContent
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::837060085355:role/LabRole
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+
+          s3_client = boto3.client('s3')
+
+          def lambda_handler(event, context):
+
+              # Retrieve the S3 object that contains the HTML content
+              bucket_name = 'fileserversystem'
+              list_of_files = ['AddSubscribers.html',"Choice.html", "index.html", "nonvegRecipe.html","uploadRecipe.html","vegRecipe.html"]
+              object_key = ""
+              for key in list_of_files:
+                  object_key = key
+
+                  html_object = s3_client.get_object(Bucket=bucket_name, Key=object_key)
+                  html_content = html_object['Body'].read().decode('utf-8')
+
+                  # Retrieve the API Gateway endpoint value from an environment variable
+                  api_gateway_endpoint = os.environ['API_GATEWAY_ENDPOINT']
+
+                  # Replace the placeholder with the actual API Gateway endpoint value
+                  modified_html_content = html_content.replace('__API_GATEWAY_ENDPOINT__', api_gateway_endpoint)
+                  if key == "uploadRecipe.html":
+                    modified_html_content = html_content.replace('__STATE_MACHINE_ARN__', os.environ['STATE_MACHINE_ARN'])
+
+                  
+                  s3_client.put_object(Bucket=bucket_name, 
+                  Key=object_key, 
+                  Body=modified_html_content.encode('utf-8'),
+                  ContentType='text/html',
+                  ContentDisposition='inline'
+                  )
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Content-Type': 'text/html'
+                  },
+                  'body': api_gateway_endpoint
+              }
+
+      Runtime: python3.9
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          API_GATEWAY_ENDPOINT: !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/recipestage"
+          STATE_MACHINE_ARN: !GetAtt RecipeStateMachine.Arn
+
+  
+
+
+Outputs:
+  ApiGatewayProdInvokeURL:
+    Description: "API Gateway prod Invoke URL."
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/recipestage'
